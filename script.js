@@ -20,8 +20,11 @@ let currentEditionId = null;
 let currentEditionData = null;
 let allPlayers = []; 
 let teams = []; 
-let matches = []; 
+let matches = []; // Contiene lo stato "nuovo"
 let pendingCupAction = null;
+
+// MEMORIA LOCALE PER CONFRONTARE CAMBIAMENTI
+let previousMatchesState = {}; 
 
 const $ = (id) => document.getElementById(id);
 
@@ -284,12 +287,106 @@ async function loadLatestEdition(isLivePage = false) {
         if(isLivePage) $('no-live-msg').classList.remove('hide');
     }
 }
+
+// *** LOGICA LIVE, ANIMAZIONI E CONFRONTO STATI ***
 function subscribeToEditionData(id) {
-    onSnapshot(query(collection(db, "teams"), where("editionId", "==", id)), sn => { teams = sn.docs.map(d => ({id: d.id, ...d.data()})); renderTeamSelects(); });
-    onSnapshot(query(collection(db, "matches"), where("editionId", "==", id), orderBy("timestamp", "desc")), sn => { matches = sn.docs.map(d => ({id: d.id, ...d.data()})); renderMatches(); renderStats(); });
+    onSnapshot(query(collection(db, "teams"), where("editionId", "==", id)), sn => { 
+        teams = sn.docs.map(d => ({id: d.id, ...d.data()})); 
+        renderTeamSelects(); 
+    });
+
+    onSnapshot(query(collection(db, "matches"), where("editionId", "==", id), orderBy("timestamp", "desc")), sn => { 
+        const newMatches = sn.docs.map(d => ({id: d.id, ...d.data()}));
+        
+        // Se non siamo sulla pagina live, non sprecare risorse per animazioni
+        const isLiveView = !$('view-live').classList.contains('hide');
+
+        if (isLiveView) {
+            newMatches.forEach(newMatch => {
+                const oldMatch = previousMatchesState[newMatch.id];
+
+                if (oldMatch) {
+                    // 1. CONTROLLO GOAL (Chi ha segnato?)
+                    checkGoal(newMatch.hitsA, oldMatch.hitsA, newMatch.teamA);
+                    checkGoal(newMatch.hitsB, oldMatch.hitsB, newMatch.teamB);
+
+                    // 2. CONTROLLO FINE PARTITA
+                    if (newMatch.status === 'finished' && oldMatch.status !== 'finished') {
+                        triggerEndMatch(newMatch);
+                    }
+                }
+            });
+        }
+
+        // Aggiorna lo stato precedente e renderizza
+        newMatches.forEach(m => previousMatchesState[m.id] = m);
+        matches = newMatches;
+        renderMatches(); 
+        renderStats(); 
+    });
 }
 
-// --- RENDER NUOVA SCHEDA GIOCATORE ---
+// Funzione ausiliaria per trovare chi ha segnato
+function checkGoal(newHits, oldHits, teamId) {
+    const newKeys = Object.keys(newHits || {});
+    const oldKeys = Object.keys(oldHits || {});
+
+    // Se c'è un nuovo bicchiere colpito
+    if (newKeys.length > oldKeys.length) {
+        // Trova quale key (cupId) è nuova
+        const diff = newKeys.find(k => !oldKeys.includes(k));
+        if (diff) {
+            const playerId = newHits[diff];
+            triggerGoalAnimation(playerId, teamId);
+        }
+    }
+}
+
+// --- ANIMAZIONI ---
+
+function triggerGoalAnimation(playerId, teamId) {
+    const player = allPlayers.find(p => p.id === playerId);
+    const team = teams.find(t => t.id === teamId);
+    
+    // Suona coriandoli
+    confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#ff6b00', '#ffffff'] });
+
+    // Mostra Overlay
+    const overlay = $('overlay-goal');
+    $('overlay-goal-img').style.backgroundImage = `url('${player?.photoUrl || ''}')`;
+    $('overlay-goal-name').innerText = player?.name || 'GOL!';
+    $('overlay-goal-team').innerText = team?.name || '';
+    
+    overlay.classList.remove('hide');
+    
+    // Nascondi dopo 4 secondi
+    setTimeout(() => {
+        overlay.classList.add('hide');
+    }, 4000);
+}
+
+function triggerEndMatch(match) {
+    const winnerTeam = teams.find(t => t.id === match.winner);
+    const loserTeamId = match.winner === match.teamA ? match.teamB : match.teamA;
+    const loserTeam = teams.find(t => t.id === loserTeamId);
+
+    $('overlay-end-winner').innerText = winnerTeam?.name || 'VINCITORE';
+    $('overlay-end-loser').innerText = loserTeam?.name || 'SCONFITTO';
+
+    const overlay = $('overlay-end');
+    overlay.classList.remove('hide');
+
+    // Coriandoli prolungati
+    let duration = 3000;
+    let end = Date.now() + duration;
+    (function frame() {
+        confetti({ particleCount: 5, angle: 60, spread: 55, origin: { x: 0 }, colors: ['#FFD700'] });
+        confetti({ particleCount: 5, angle: 120, spread: 55, origin: { x: 1 }, colors: ['#FFD700'] });
+        if (Date.now() < end) requestAnimationFrame(frame);
+    }());
+}
+
+// --- RENDER STANDARD --- (Non modificato)
 function renderPlayersPage() {
     const grid = $('public-players-grid');
     if(allPlayers.length === 0) { grid.innerHTML = "<p>Nessun giocatore in database.</p>"; return; }
@@ -298,39 +395,21 @@ function renderPlayersPage() {
         <div class="card bg-gray-900 border-2 border-gray-700 rounded-xl overflow-hidden relative group hover:border-blue-500 hover:scale-[1.02] transition-all duration-300 shadow-xl">
             <div class="absolute inset-0 bg-cover bg-center opacity-30" style="background-image: url('${p.photoUrl || 'https://via.placeholder.com/300?text=' + p.name}'); filter: blur(5px);"></div>
             <div class="relative z-10 p-4 flex flex-col items-center">
-                
                 <div class="w-28 h-28 rounded-full border-4 border-white shadow-2xl bg-cover bg-center mb-3 relative" 
                      style="background-image: url('${p.photoUrl || 'https://via.placeholder.com/150?text=' + p.name.charAt(0)}')">
                      <div class="absolute bottom-0 right-0 bg-blue-600 rounded-full px-2 py-0.5 text-[10px] font-bold border border-white">${p.hand === 'Destra' ? '🖐️ DX' : '🖐️ SX'}</div>
                 </div>
-                
                 <h3 class="font-black text-2xl uppercase tracking-wider text-white leading-none mb-1 text-center drop-shadow-md">${p.name}</h3>
                 ${p.nickname ? `<div class="text-yellow-400 italic font-serif text-sm mb-2">"${p.nickname}"</div>` : ''}
-                
                 <div class="flex flex-wrap gap-2 justify-center mb-4">
                     <span class="px-2 py-0.5 bg-purple-900 border border-purple-500 rounded text-[10px] font-bold uppercase text-purple-300">${p.style}</span>
                 </div>
-
                 <div class="w-full grid grid-cols-3 gap-2 bg-black/60 p-3 rounded-lg backdrop-blur-sm border border-gray-700">
-                    <div class="flex flex-col items-center">
-                        <span class="text-xl mb-1">🎯</span>
-                        <span class="text-lg font-black text-green-400 leading-none">${p.prec}</span>
-                        <span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Prec</span>
-                    </div>
-                    <div class="flex flex-col items-center border-l border-gray-700">
-                        <span class="text-xl mb-1">🔥</span>
-                        <span class="text-lg font-black text-red-500 leading-none">${p.pow}</span>
-                        <span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Pow</span>
-                    </div>
-                    <div class="flex flex-col items-center border-l border-gray-700">
-                        <span class="text-xl mb-1">🍺</span>
-                        <span class="text-lg font-black text-yellow-500 leading-none">${p.tol}</span>
-                        <span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Res</span>
-                    </div>
+                    <div class="flex flex-col items-center"><span class="text-xl mb-1">🎯</span><span class="text-lg font-black text-green-400 leading-none">${p.prec}</span><span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Prec</span></div>
+                    <div class="flex flex-col items-center border-l border-gray-700"><span class="text-xl mb-1">🔥</span><span class="text-lg font-black text-red-500 leading-none">${p.pow}</span><span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Pow</span></div>
+                    <div class="flex flex-col items-center border-l border-gray-700"><span class="text-xl mb-1">🍺</span><span class="text-lg font-black text-yellow-500 leading-none">${p.tol}</span><span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Res</span></div>
                 </div>
-
                 ${p.description ? `<div class="mt-3 text-center text-xs text-gray-400 italic font-serif border-t border-gray-700 pt-2 w-full">"${p.description}"</div>` : ''}
-
             </div>
         </div>
     `).join('');
@@ -449,7 +528,6 @@ function processHits(map, tId, scores) {
     });
 }
 
-// *** MODIFICATO: SEPARATORE VISUALE PER IL LOOP ***
 function renderStats() {
     const stats = calculateStatsData();
     const tickerContainer = $('live-ticker-content');
@@ -470,14 +548,12 @@ function renderStats() {
         <span class="text-gray-700 mx-2">•</span>
     `).join('');
 
-    // Separatore visuale che appare tra la fine e l'inizio della lista
     const separator = `
         <span class="ticker-item" style="color: #ff6b00; font-weight: 900; margin: 0 50px; font-style: italic; letter-spacing: 2px;">
             ★ LEOPARDI OPEN ★
         </span>
     `;
 
-    // Inseriamo il separatore tra le ripetizioni
     tickerContainer.innerHTML = htmlContent + separator + htmlContent + separator + htmlContent;
 }
 
