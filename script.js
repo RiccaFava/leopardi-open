@@ -33,7 +33,6 @@ window.app = {
         if (page === 'landing') $('view-landing').classList.remove('hide');
         if (page === 'players') { $('view-players').classList.remove('hide'); renderPlayersPage(); }
         if (page === 'live') { $('view-live').classList.remove('hide'); loadLatestEdition(true); }
-        if (page === 'stats') { $('view-stats').classList.remove('hide'); loadLatestEdition(); }
         if (page === 'archive') { $('view-archive').classList.remove('hide'); renderArchiveList(); }
         if (page === 'admin') {
             if (localStorage.getItem('bp_auth')) { 
@@ -66,9 +65,7 @@ window.app = {
         let photoUrl = ""; 
 
         try {
-            if (file) {
-                photoUrl = await compressImage(file);
-            }
+            if (file) photoUrl = await compressImage(file);
 
             const stats = {
                 hand: $('player-hand').value,
@@ -269,7 +266,6 @@ async function loadLatestEdition(isLivePage = false) {
     $('live-matches').innerHTML = '';
     $('live-edition-title').innerText = '...';
     $('no-live-msg').classList.add('hide');
-    $('btn-live-stats').classList.add('hide');
 
     if(!snap.empty) {
         const latestDoc = snap.docs[0];
@@ -282,8 +278,6 @@ async function loadLatestEdition(isLivePage = false) {
         currentEditionId = latestDoc.id;
         currentEditionData = data;
         $('live-edition-title').innerText = data.name;
-        $('stats-edition-name').innerText = data.name;
-        $('btn-live-stats').classList.remove('hide');
         subscribeToEditionData(currentEditionId);
     } else {
         $('live-edition-title').innerText = "Nessun Torneo Attivo";
@@ -424,13 +418,10 @@ function renderPlayerSelects() {
         </div>`).join('');
 }
 
-// *** NUOVA FUNZIONE: LISTA TEAM ELIMINABILI ***
 function renderTeamSelects() {
     const opts = teams.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
     $('sel-team-a').innerHTML = '<option value="">Seleziona Team A</option>' + opts;
     $('sel-team-b').innerHTML = '<option value="">Seleziona Team B</option>' + opts;
-
-    // Popola anche la lista "Team Iscritti" con il bottone di eliminazione
     const listEl = $('teams-list-admin');
     if (listEl) {
         listEl.innerHTML = teams.map(t => `
@@ -457,10 +448,39 @@ function processHits(map, tId, scores) {
         if(p) scores[p.name] = (scores[p.name] || 0) + 1;
     });
 }
+
+// *** MODIFICATO: SEPARATORE VISUALE PER IL LOOP ***
 function renderStats() {
     const stats = calculateStatsData();
-    $('scorers-list').innerHTML = stats.map((s, i) => `<div class="flex justify-between items-center bg-darksec p-2 rounded border border-gray-700 mb-1"><span class="text-sm font-bold"><span class="text-bp mr-2">#${i+1}</span> ${s.name}</span><span class="font-mono bg-gray-800 px-2 rounded text-xs">${s.score}</span></div>`).join('');
+    const tickerContainer = $('live-ticker-content');
+    
+    if(!tickerContainer) return;
+
+    if (stats.length === 0) {
+        tickerContainer.innerHTML = '<span class="ticker-item">Nessun punto segnato...</span>';
+        return;
+    }
+
+    const htmlContent = stats.map((s, i) => `
+        <span class="ticker-item">
+            <span class="rank">#${i+1}</span>
+            ${s.name}
+            <span class="score">(${s.score})</span>
+        </span>
+        <span class="text-gray-700 mx-2">•</span>
+    `).join('');
+
+    // Separatore visuale che appare tra la fine e l'inizio della lista
+    const separator = `
+        <span class="ticker-item" style="color: #ff6b00; font-weight: 900; margin: 0 50px; font-style: italic; letter-spacing: 2px;">
+            ★ LEOPARDI OPEN ★
+        </span>
+    `;
+
+    // Inseriamo il separatore tra le ripetizioni
+    tickerContainer.innerHTML = htmlContent + separator + htmlContent + separator + htmlContent;
 }
+
 function renderArchiveList() {
     onSnapshot(query(collection(db, "editions"), orderBy("createdAt", "desc")), (snap) => {
         const list = snap.docs.map(d => ({id: d.id, ...d.data()}));
