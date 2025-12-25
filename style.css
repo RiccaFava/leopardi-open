@@ -1,0 +1,37 @@
+body { background-color: #0f172a; color: white; font-family: 'Inter', sans-serif; }
+
+.card {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+}
+
+.btn { 
+    background: #ff6b00; color: white; font-weight: bold; 
+    border-radius: 8px; padding: 10px 16px; transition: 0.2s; 
+    border: none; cursor: pointer;
+}
+.btn:hover { background: #ea580c; transform: translateY(-1px); }
+
+.nav-btn {
+    padding: 6px 12px;
+    border-radius: 6px;
+    transition: all 0.2s;
+}
+.nav-btn:hover { background-color: rgba(255,255,255,0.1); }
+
+.input { 
+    background: #0f172a; border: 1px solid #334155; 
+    padding: 10px; border-radius: 8px; width: 100%; color: white; margin-bottom: 10px; 
+    font-size: 14px;
+}
+.input:focus { outline: 2px solid #ff6b00; border-color: transparent; }
+
+.cup-red {
+    background: radial-gradient(circle at 30% 30%, #ef4444, #991b1b);
+    border: 2px solid rgba(255,255,255,0.2);
+    box-shadow: 0 4px 6px rgba(0,0,0,0.5), inset 0 2px 4px rgba(255,255,255,0.1);
+}
+
+.hide { display: none !important; }
