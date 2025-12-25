@@ -20,11 +20,15 @@ let currentEditionId = null;
 let currentEditionData = null;
 let allPlayers = []; 
 let teams = []; 
-let matches = []; // Contiene lo stato "nuovo"
+let matches = []; 
 let pendingCupAction = null;
 
 // MEMORIA LOCALE PER CONFRONTARE CAMBIAMENTI
 let previousMatchesState = {}; 
+
+// GESTIONE LISTENER (FIX MEMORY LEAK)
+let unsubMatches = null;
+let unsubTeams = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -194,11 +198,12 @@ window.app = {
         const p1 = allPlayers.find(p => p.id === team.p1Id) || { name: team.p1Name, photoUrl: '' };
         const p2 = allPlayers.find(p => p.id === team.p2Id) || { name: team.p2Name, photoUrl: '' };
 
-        pendingCupAction = { matchId, teamField, cupNum, match: matches.find(m => m.id === matchId) };
+        // Salvo solo i riferimenti necessari, non l'intero oggetto match che diventa obsoleto
+        pendingCupAction = { matchId, teamField, cupNum };
         
         const renderBtn = (player) => `
             <div class="w-16 h-16 rounded-full bg-cover bg-center border-2 border-white mb-1 shadow-lg" 
-                 style="background-image: url('${player.photoUrl || 'https://via.placeholder.com/150?text='+player.name.charAt(0)}')"></div>
+                 style="background-image: url('${player.photoUrl || 'https://placehold.co/150/1e293b/ffffff?text='+player.name.charAt(0)}')"></div>
             <span class="font-bold text-sm text-white">${player.name}</span>
         `;
         
@@ -213,12 +218,22 @@ window.app = {
 
     confirmHit: async (playerId) => {
         $('scorer-modal').classList.add('hide');
-        const { matchId, teamField, cupNum, match } = pendingCupAction;
-        const newHits = { ...match[teamField], [cupNum]: playerId };
+        const { matchId, teamField, cupNum } = pendingCupAction;
+        
+        // FIX: Recupera sempre lo stato più aggiornato dall'array locale sincronizzato
+        const currentMatch = matches.find(m => m.id === matchId);
+        
+        if (!currentMatch) {
+            alert("Errore: La partita sembra essere stata cancellata o non caricata.");
+            return;
+        }
+
+        const newHits = { ...currentMatch[teamField], [cupNum]: playerId };
         const updates = { [teamField]: newHits };
+        
         if (Object.keys(newHits).length >= 6) {
             updates.status = 'finished';
-            updates.winner = teamField === 'hitsA' ? match.teamA : match.teamB;
+            updates.winner = teamField === 'hitsA' ? currentMatch.teamA : currentMatch.teamB;
         }
         await updateDoc(doc(db, "matches", matchId), updates);
     }
@@ -290,15 +305,18 @@ async function loadLatestEdition(isLivePage = false) {
 
 // *** LOGICA LIVE, ANIMAZIONI E CONFRONTO STATI ***
 function subscribeToEditionData(id) {
-    onSnapshot(query(collection(db, "teams"), where("editionId", "==", id)), sn => { 
+    // FIX: Pulizia listener precedenti
+    if (unsubTeams) unsubTeams();
+    if (unsubMatches) unsubMatches();
+
+    unsubTeams = onSnapshot(query(collection(db, "teams"), where("editionId", "==", id)), sn => { 
         teams = sn.docs.map(d => ({id: d.id, ...d.data()})); 
         renderTeamSelects(); 
     });
 
-    onSnapshot(query(collection(db, "matches"), where("editionId", "==", id), orderBy("timestamp", "desc")), sn => { 
+    unsubMatches = onSnapshot(query(collection(db, "matches"), where("editionId", "==", id), orderBy("timestamp", "desc")), sn => { 
         const newMatches = sn.docs.map(d => ({id: d.id, ...d.data()}));
         
-        // Se non siamo sulla pagina live, non sprecare risorse per animazioni
         const isLiveView = !$('view-live').classList.contains('hide');
 
         if (isLiveView) {
@@ -306,11 +324,9 @@ function subscribeToEditionData(id) {
                 const oldMatch = previousMatchesState[newMatch.id];
 
                 if (oldMatch) {
-                    // 1. CONTROLLO GOAL (Chi ha segnato?)
                     checkGoal(newMatch.hitsA, oldMatch.hitsA, newMatch.teamA);
                     checkGoal(newMatch.hitsB, oldMatch.hitsB, newMatch.teamB);
 
-                    // 2. CONTROLLO FINE PARTITA
                     if (newMatch.status === 'finished' && oldMatch.status !== 'finished') {
                         triggerEndMatch(newMatch);
                     }
@@ -318,7 +334,6 @@ function subscribeToEditionData(id) {
             });
         }
 
-        // Aggiorna lo stato precedente e renderizza
         newMatches.forEach(m => previousMatchesState[m.id] = m);
         matches = newMatches;
         renderMatches(); 
@@ -326,14 +341,11 @@ function subscribeToEditionData(id) {
     });
 }
 
-// Funzione ausiliaria per trovare chi ha segnato
 function checkGoal(newHits, oldHits, teamId) {
     const newKeys = Object.keys(newHits || {});
     const oldKeys = Object.keys(oldHits || {});
 
-    // Se c'è un nuovo bicchiere colpito
     if (newKeys.length > oldKeys.length) {
-        // Trova quale key (cupId) è nuova
         const diff = newKeys.find(k => !oldKeys.includes(k));
         if (diff) {
             const playerId = newHits[diff];
@@ -343,15 +355,12 @@ function checkGoal(newHits, oldHits, teamId) {
 }
 
 // --- ANIMAZIONI ---
-
 function triggerGoalAnimation(playerId, teamId) {
     const player = allPlayers.find(p => p.id === playerId);
     const team = teams.find(t => t.id === teamId);
     
-    // Suona coriandoli
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#ff6b00', '#ffffff'] });
 
-    // Mostra Overlay
     const overlay = $('overlay-goal');
     $('overlay-goal-img').style.backgroundImage = `url('${player?.photoUrl || ''}')`;
     $('overlay-goal-name').innerText = player?.name || 'GOL!';
@@ -359,7 +368,6 @@ function triggerGoalAnimation(playerId, teamId) {
     
     overlay.classList.remove('hide');
     
-    // Nascondi dopo 4 secondi
     setTimeout(() => {
         overlay.classList.add('hide');
     }, 4000);
@@ -376,7 +384,6 @@ function triggerEndMatch(match) {
     const overlay = $('overlay-end');
     overlay.classList.remove('hide');
 
-    // Coriandoli prolungati
     let duration = 3000;
     let end = Date.now() + duration;
     (function frame() {
@@ -386,17 +393,17 @@ function triggerEndMatch(match) {
     }());
 }
 
-// --- RENDER STANDARD --- (Non modificato)
+// --- RENDER STANDARD ---
 function renderPlayersPage() {
     const grid = $('public-players-grid');
     if(allPlayers.length === 0) { grid.innerHTML = "<p>Nessun giocatore in database.</p>"; return; }
     
     grid.innerHTML = allPlayers.map(p => `
         <div class="card bg-gray-900 border-2 border-gray-700 rounded-xl overflow-hidden relative group hover:border-blue-500 hover:scale-[1.02] transition-all duration-300 shadow-xl">
-            <div class="absolute inset-0 bg-cover bg-center opacity-30" style="background-image: url('${p.photoUrl || 'https://via.placeholder.com/300?text=' + p.name}'); filter: blur(5px);"></div>
+            <div class="absolute inset-0 bg-cover bg-center opacity-30" style="background-image: url('${p.photoUrl || 'https://placehold.co/300/1e293b/ffffff?text=' + p.name}'); filter: blur(5px);"></div>
             <div class="relative z-10 p-4 flex flex-col items-center">
                 <div class="w-28 h-28 rounded-full border-4 border-white shadow-2xl bg-cover bg-center mb-3 relative" 
-                     style="background-image: url('${p.photoUrl || 'https://via.placeholder.com/150?text=' + p.name.charAt(0)}')">
+                     style="background-image: url('${p.photoUrl || 'https://placehold.co/150/1e293b/ffffff?text=' + p.name.charAt(0)}')">
                      <div class="absolute bottom-0 right-0 bg-blue-600 rounded-full px-2 py-0.5 text-[10px] font-bold border border-white">${p.hand === 'Destra' ? '🖐️ DX' : '🖐️ SX'}</div>
                 </div>
                 <h3 class="font-black text-2xl uppercase tracking-wider text-white leading-none mb-1 text-center drop-shadow-md">${p.name}</h3>
@@ -442,6 +449,7 @@ function renderPyramid(hitsObj, isAdmin, matchId, teamField, teamId) {
     const hitCups = Object.keys(hitsObj || {}); 
     const remaining = allCups.filter(c => !hitCups.includes(c.toString()));
     const count = remaining.length;
+    
     let rows = [];
     if (count >= 5) rows = [[1], [2, 3], [4, 5, 6]];
     else if (count === 4) rows = [[remaining[0]], [remaining[1], remaining[2]], [remaining[3]]];
@@ -450,16 +458,30 @@ function renderPyramid(hitsObj, isAdmin, matchId, teamField, teamId) {
     else if (count === 1) rows = [[remaining[0]]];
 
     let html = '<div class="flex flex-col items-center gap-1 min-h-[100px] justify-center transition-all duration-300">';
+    
     rows.forEach(row => {
         html += '<div class="flex gap-1">';
         row.forEach(cupId => {
             const isHitInStaticMode = (count >= 5) && hitCups.includes(cupId.toString());
+            
             if (isHitInStaticMode) {
                 const playerId = hitsObj[cupId];
                 const player = allPlayers.find(p => p.id === playerId);
-                const bg = player ? player.photoUrl : '';
-                if (bg) html += `<div class="w-8 h-8 rounded-full border border-gray-700/50 bg-cover bg-center grayscale opacity-50" style="background-image: url('${bg}')"></div>`;
-                else html += `<div class="w-8 h-8 rounded-full border border-gray-700/50"></div>`;
+                
+                // LOGICA CORRETTA PER IMMAGINE O FALLBACK
+                let bgUrl = '';
+                if (player) {
+                    // Se c'è la foto usa quella, altrimenti genera placeholder con l'iniziale
+                    bgUrl = player.photoUrl || `https://placehold.co/150/1e293b/ffffff?text=${encodeURIComponent(player.name.charAt(0))}`;
+                }
+
+                if (bgUrl) {
+                    html += `<div class="w-8 h-8 rounded-full border border-gray-700/50 bg-cover bg-center grayscale opacity-50" style="background-image: url('${bgUrl}')" title="${player ? player.name : ''}"></div>`;
+                } else {
+                    // Fallback estremo se il player ID non esiste più nel DB
+                    html += `<div class="w-8 h-8 rounded-full border border-gray-700/50 bg-gray-800"></div>`;
+                }
+
             } else {
                 if (isAdmin) {
                      html += `<button onclick="app.handleCupClick('${matchId}', '${teamField}', '${cupId}', '${teamId}')" class="w-8 h-8 rounded-full bg-darksec hover:bg-gray-600 border border-gray-500 flex items-center justify-center font-bold text-xs shadow-lg transition-transform hover:scale-110">${cupId}</button>`;
@@ -470,6 +492,7 @@ function renderPyramid(hitsObj, isAdmin, matchId, teamField, teamId) {
         });
         html += '</div>';
     });
+    
     html += '</div>';
     return html;
 }
@@ -482,7 +505,7 @@ function renderHitTrace(hitsObj, isAdmin, matchId, teamField) {
         const bg = player ? player.photoUrl : '';
         const action = isAdmin ? `onclick="app.undoHit('${matchId}', '${teamField}', '${cupId}')"` : '';
         const style = isAdmin ? "cursor-pointer hover:border-red-500" : "";
-        return `<div ${action} class="w-8 h-8 rounded-full bg-cover bg-center border-2 border-white/50 shadow-md ${style}" style="background-image: url('${bg || 'https://via.placeholder.com/50'}')" title="${player?.name}"></div>`
+        return `<div ${action} class="w-8 h-8 rounded-full bg-cover bg-center border-2 border-white/50 shadow-md ${style}" style="background-image: url('${bg || 'https://placehold.co/50/1e293b/ffffff?text=X'}')" title="${player?.name}"></div>`
     }).join('')}</div>`;
 }
 
