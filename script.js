@@ -22,13 +22,12 @@ let allPlayers = [];
 let teams = []; 
 let matches = []; 
 let pendingCupAction = null;
-
-// MEMORIA LOCALE PER CONFRONTARE CAMBIAMENTI
 let previousMatchesState = {}; 
-
-// GESTIONE LISTENER (FIX MEMORY LEAK)
 let unsubMatches = null;
 let unsubTeams = null;
+
+// STATO MODIFICA GIOCATORE
+let editingPlayerId = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -57,8 +56,8 @@ window.app = {
     },
     logout: () => { localStorage.removeItem('bp_auth'); app.router('landing'); },
 
-    // --- CREA GIOCATORE ---
-    createPlayer: async () => {
+    // --- SALVA (CREA O AGGIORNA) GIOCATORE ---
+    savePlayer: async () => {
         const name = $('player-name').value.trim();
         const fileInput = $('player-photo');
         const file = fileInput.files[0];
@@ -67,13 +66,10 @@ window.app = {
         
         const btn = $('btn-save-player');
         btn.disabled = true;
-        btn.innerText = "Salvataggio...";
+        btn.innerText = "Elaborazione...";
         
-        let photoUrl = ""; 
-
         try {
-            if (file) photoUrl = await compressImage(file);
-
+            // Stats comuni
             const stats = {
                 hand: $('player-hand').value,
                 style: $('player-style').value,
@@ -84,21 +80,104 @@ window.app = {
                 tol: $('stat-tol').value
             };
 
-            await addDoc(collection(db, "players"), { name, photoUrl, ...stats, createdAt: new Date() });
+            // Gestione FOTO
+            let photoUrl = "";
             
-            $('player-name').value = '';
-            $('player-nick').value = '';
-            $('player-desc').value = '';
-            fileInput.value = ''; 
-            alert("Giocatore salvato!");
+            // Caso 1: Stiamo MODIFICANDO
+            if (editingPlayerId) {
+                const existingPlayer = allPlayers.find(p => p.id === editingPlayerId);
+                // Se l'utente ha caricato una nuova foto, la processiamo.
+                // Altrimenti teniamo quella vecchia.
+                if (file) {
+                    photoUrl = await compressImage(file);
+                } else {
+                    photoUrl = existingPlayer.photoUrl || "";
+                }
+
+                await updateDoc(doc(db, "players", editingPlayerId), { 
+                    name, photoUrl, ...stats 
+                });
+                alert("Giocatore Aggiornato!");
+                app.cancelEdit(); // Esci dalla modalità edit
+
+            } else {
+                // Caso 2: Stiamo CREANDO
+                if (file) photoUrl = await compressImage(file);
+                await addDoc(collection(db, "players"), { name, photoUrl, ...stats, createdAt: new Date() });
+                alert("Giocatore Creato!");
+                
+                // Reset form solo se creazione
+                $('player-name').value = '';
+                $('player-nick').value = '';
+                $('player-desc').value = '';
+                fileInput.value = ''; 
+            }
 
         } catch (e) {
             console.error(e);
             alert("Errore: " + e.message);
         } finally {
             btn.disabled = false;
-            btn.innerText = "Salva e Carica";
+            // Ripristina testo corretto in base allo stato
+            btn.innerText = editingPlayerId ? "Aggiorna Giocatore" : "Salva e Carica";
         }
+    },
+
+    // --- FUNZIONI PER MODIFICA ---
+    loadPlayerForEdit: (id) => {
+        const p = allPlayers.find(x => x.id === id);
+        if(!p) return;
+
+        editingPlayerId = id;
+        
+        // Popola i campi
+        $('player-name').value = p.name;
+        $('player-nick').value = p.nickname || '';
+        $('player-desc').value = p.description || '';
+        $('player-hand').value = p.hand || 'Destra';
+        $('player-style').value = p.style || 'Misto';
+        $('stat-prec').value = p.prec || 50;
+        $('stat-pow').value = p.pow || 50;
+        $('stat-tol').value = p.tol || 50;
+
+        // UI Changes
+        $('form-title').innerText = "✏️ Modifica: " + p.name;
+        $('btn-save-player').innerText = "Aggiorna Giocatore";
+        $('btn-save-player').classList.replace('bg-blue-600', 'bg-green-600');
+        $('btn-save-player').classList.replace('hover:bg-blue-500', 'hover:bg-green-500');
+        $('btn-cancel-edit').classList.remove('hide');
+        $('card-player-form').classList.add('border-green-500');
+        $('card-player-form').classList.remove('border-l-blue-500');
+        
+        // Scrolla su
+        $('view-dashboard').scrollIntoView({ behavior: 'smooth' });
+    },
+
+    cancelEdit: () => {
+        editingPlayerId = null;
+        
+        // Reset campi
+        $('player-name').value = '';
+        $('player-nick').value = '';
+        $('player-desc').value = '';
+        $('player-photo').value = '';
+        $('stat-prec').value = 70;
+        $('stat-pow').value = 70;
+        $('stat-tol').value = 70;
+
+        // Reset UI
+        $('form-title').innerText = "1. Nuova Carta Giocatore";
+        $('btn-save-player').innerText = "Salva e Carica";
+        $('btn-save-player').classList.replace('bg-green-600', 'bg-blue-600');
+        $('btn-save-player').classList.replace('hover:bg-green-500', 'hover:bg-blue-500');
+        $('btn-cancel-edit').classList.add('hide');
+        $('card-player-form').classList.remove('border-green-500');
+        $('card-player-form').classList.add('border-l-blue-500');
+    },
+
+    filterRoster: () => {
+        const term = $('search-roster').value.toLowerCase();
+        renderPlayersPage(term);
     },
 
     // --- ADMIN: EDIZIONE ---
@@ -198,12 +277,11 @@ window.app = {
         const p1 = allPlayers.find(p => p.id === team.p1Id) || { name: team.p1Name, photoUrl: '' };
         const p2 = allPlayers.find(p => p.id === team.p2Id) || { name: team.p2Name, photoUrl: '' };
 
-        // Salvo solo i riferimenti necessari, non l'intero oggetto match che diventa obsoleto
-        pendingCupAction = { matchId, teamField, cupNum };
+        pendingCupAction = { matchId, teamField, cupNum, match: matches.find(m => m.id === matchId) };
         
         const renderBtn = (player) => `
             <div class="w-16 h-16 rounded-full bg-cover bg-center border-2 border-white mb-1 shadow-lg" 
-                 style="background-image: url('${player.photoUrl || 'https://placehold.co/150/1e293b/ffffff?text='+player.name.charAt(0)}')"></div>
+                 style="background-image: url('${player.photoUrl || 'https://placehold.co/150/1e293b/ffffff?text='+encodeURIComponent(player.name.charAt(0))}')"></div>
             <span class="font-bold text-sm text-white">${player.name}</span>
         `;
         
@@ -217,14 +295,19 @@ window.app = {
     },
 
     confirmHit: async (playerId) => {
+        // Disabilita UI per evitare doppi click accidentali
+        const btnId = `btn-scorer-${pendingCupAction.teamField === 'hitsA' ? 'p1' : 'p2'}`; // Logica approssimativa, meglio bloccare tutto il modale
         $('scorer-modal').classList.add('hide');
+
         const { matchId, teamField, cupNum } = pendingCupAction;
         
-        // FIX: Recupera sempre lo stato più aggiornato dall'array locale sincronizzato
+        // CORREZIONE CRITICA:
+        // Recupera sempre la versione più recente del match dall'array globale sincronizzato
+        // Invece di usare l'oggetto 'match' stantio salvato in pendingCupAction
         const currentMatch = matches.find(m => m.id === matchId);
         
         if (!currentMatch) {
-            alert("Errore: La partita sembra essere stata cancellata o non caricata.");
+            alert("Errore: Partita non trovata o conclusa.");
             return;
         }
 
@@ -235,7 +318,13 @@ window.app = {
             updates.status = 'finished';
             updates.winner = teamField === 'hitsA' ? currentMatch.teamA : currentMatch.teamB;
         }
-        await updateDoc(doc(db, "matches", matchId), updates);
+        
+        try {
+            await updateDoc(doc(db, "matches", matchId), updates);
+        } catch (e) {
+            console.error("Errore salvataggio punto:", e);
+            alert("Errore di connessione. Riprova.");
+        }
     }
 };
 
@@ -303,9 +392,7 @@ async function loadLatestEdition(isLivePage = false) {
     }
 }
 
-// *** LOGICA LIVE, ANIMAZIONI E CONFRONTO STATI ***
 function subscribeToEditionData(id) {
-    // FIX: Pulizia listener precedenti
     if (unsubTeams) unsubTeams();
     if (unsubMatches) unsubMatches();
 
@@ -367,10 +454,7 @@ function triggerGoalAnimation(playerId, teamId) {
     $('overlay-goal-team').innerText = team?.name || '';
     
     overlay.classList.remove('hide');
-    
-    setTimeout(() => {
-        overlay.classList.add('hide');
-    }, 4000);
+    setTimeout(() => { overlay.classList.add('hide'); }, 4000);
 }
 
 function triggerEndMatch(match) {
@@ -393,30 +477,55 @@ function triggerEndMatch(match) {
     }());
 }
 
-// --- RENDER STANDARD ---
-function renderPlayersPage() {
+// --- RENDER ---
+function renderPlayersPage(filterTerm = "") {
     const grid = $('public-players-grid');
-    if(allPlayers.length === 0) { grid.innerHTML = "<p>Nessun giocatore in database.</p>"; return; }
+    const noResults = $('no-players-found');
     
-    grid.innerHTML = allPlayers.map(p => `
-        <div class="card bg-gray-900 border-2 border-gray-700 rounded-xl overflow-hidden relative group hover:border-blue-500 hover:scale-[1.02] transition-all duration-300 shadow-xl">
-            <div class="absolute inset-0 bg-cover bg-center opacity-30" style="background-image: url('${p.photoUrl || 'https://placehold.co/300/1e293b/ffffff?text=' + p.name}'); filter: blur(5px);"></div>
+    if(allPlayers.length === 0) { 
+        grid.innerHTML = "<p class='text-gray-500'>Nessun giocatore in database.</p>"; 
+        return; 
+    }
+    
+    // Filtra i giocatori
+    const filtered = allPlayers.filter(p => {
+        const text = (p.name + " " + (p.nickname||"")).toLowerCase();
+        return text.includes(filterTerm);
+    });
+
+    if (filtered.length === 0) {
+        grid.innerHTML = "";
+        noResults.classList.remove('hide');
+        return;
+    } else {
+        noResults.classList.add('hide');
+    }
+    
+    grid.innerHTML = filtered.map(p => `
+        <div class="card bg-gray-900 border-2 border-gray-700 rounded-xl overflow-hidden relative group hover:border-blue-500 hover:scale-[1.02] transition-all duration-300 shadow-xl animate__animated animate__fadeIn">
+            <div class="absolute inset-0 bg-cover bg-center opacity-30" style="background-image: url('${p.photoUrl || 'https://placehold.co/300/1e293b/ffffff?text=' + encodeURIComponent(p.name)}'); filter: blur(5px);"></div>
             <div class="relative z-10 p-4 flex flex-col items-center">
+                
                 <div class="w-28 h-28 rounded-full border-4 border-white shadow-2xl bg-cover bg-center mb-3 relative" 
-                     style="background-image: url('${p.photoUrl || 'https://placehold.co/150/1e293b/ffffff?text=' + p.name.charAt(0)}')">
+                     style="background-image: url('${p.photoUrl || 'https://placehold.co/150/1e293b/ffffff?text=' + encodeURIComponent(p.name.charAt(0))}')">
                      <div class="absolute bottom-0 right-0 bg-blue-600 rounded-full px-2 py-0.5 text-[10px] font-bold border border-white">${p.hand === 'Destra' ? '🖐️ DX' : '🖐️ SX'}</div>
                 </div>
+                
                 <h3 class="font-black text-2xl uppercase tracking-wider text-white leading-none mb-1 text-center drop-shadow-md">${p.name}</h3>
                 ${p.nickname ? `<div class="text-yellow-400 italic font-serif text-sm mb-2">"${p.nickname}"</div>` : ''}
+                
                 <div class="flex flex-wrap gap-2 justify-center mb-4">
                     <span class="px-2 py-0.5 bg-purple-900 border border-purple-500 rounded text-[10px] font-bold uppercase text-purple-300">${p.style}</span>
                 </div>
+
                 <div class="w-full grid grid-cols-3 gap-2 bg-black/60 p-3 rounded-lg backdrop-blur-sm border border-gray-700">
                     <div class="flex flex-col items-center"><span class="text-xl mb-1">🎯</span><span class="text-lg font-black text-green-400 leading-none">${p.prec}</span><span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Prec</span></div>
                     <div class="flex flex-col items-center border-l border-gray-700"><span class="text-xl mb-1">🔥</span><span class="text-lg font-black text-red-500 leading-none">${p.pow}</span><span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Pow</span></div>
                     <div class="flex flex-col items-center border-l border-gray-700"><span class="text-xl mb-1">🍺</span><span class="text-lg font-black text-yellow-500 leading-none">${p.tol}</span><span class="text-[8px] uppercase text-gray-500 font-bold mt-1">Res</span></div>
                 </div>
+
                 ${p.description ? `<div class="mt-3 text-center text-xs text-gray-400 italic font-serif border-t border-gray-700 pt-2 w-full">"${p.description}"</div>` : ''}
+
             </div>
         </div>
     `).join('');
@@ -449,7 +558,6 @@ function renderPyramid(hitsObj, isAdmin, matchId, teamField, teamId) {
     const hitCups = Object.keys(hitsObj || {}); 
     const remaining = allCups.filter(c => !hitCups.includes(c.toString()));
     const count = remaining.length;
-    
     let rows = [];
     if (count >= 5) rows = [[1], [2, 3], [4, 5, 6]];
     else if (count === 4) rows = [[remaining[0]], [remaining[1], remaining[2]], [remaining[3]]];
@@ -458,30 +566,22 @@ function renderPyramid(hitsObj, isAdmin, matchId, teamField, teamId) {
     else if (count === 1) rows = [[remaining[0]]];
 
     let html = '<div class="flex flex-col items-center gap-1 min-h-[100px] justify-center transition-all duration-300">';
-    
     rows.forEach(row => {
         html += '<div class="flex gap-1">';
         row.forEach(cupId => {
             const isHitInStaticMode = (count >= 5) && hitCups.includes(cupId.toString());
-            
             if (isHitInStaticMode) {
                 const playerId = hitsObj[cupId];
                 const player = allPlayers.find(p => p.id === playerId);
                 
-                // LOGICA CORRETTA PER IMMAGINE O FALLBACK
+                // FIX: Fallback corretto
                 let bgUrl = '';
                 if (player) {
-                    // Se c'è la foto usa quella, altrimenti genera placeholder con l'iniziale
-                    bgUrl = player.photoUrl || `https://placehold.co/150/1e293b/ffffff?text=${encodeURIComponent(player.name.charAt(0))}`;
+                     bgUrl = player.photoUrl || `https://placehold.co/150/1e293b/ffffff?text=${encodeURIComponent(player.name.charAt(0))}`;
                 }
 
-                if (bgUrl) {
-                    html += `<div class="w-8 h-8 rounded-full border border-gray-700/50 bg-cover bg-center grayscale opacity-50" style="background-image: url('${bgUrl}')" title="${player ? player.name : ''}"></div>`;
-                } else {
-                    // Fallback estremo se il player ID non esiste più nel DB
-                    html += `<div class="w-8 h-8 rounded-full border border-gray-700/50 bg-gray-800"></div>`;
-                }
-
+                if (bgUrl) html += `<div class="w-8 h-8 rounded-full border border-gray-700/50 bg-cover bg-center grayscale opacity-50" style="background-image: url('${bgUrl}')" title="${player?.name}"></div>`;
+                else html += `<div class="w-8 h-8 rounded-full border border-gray-700/50 bg-gray-800"></div>`;
             } else {
                 if (isAdmin) {
                      html += `<button onclick="app.handleCupClick('${matchId}', '${teamField}', '${cupId}', '${teamId}')" class="w-8 h-8 rounded-full bg-darksec hover:bg-gray-600 border border-gray-500 flex items-center justify-center font-bold text-xs shadow-lg transition-transform hover:scale-110">${cupId}</button>`;
@@ -492,7 +592,6 @@ function renderPyramid(hitsObj, isAdmin, matchId, teamField, teamId) {
         });
         html += '</div>';
     });
-    
     html += '</div>';
     return html;
 }
@@ -513,10 +612,15 @@ function renderPlayerSelects() {
     const opts = allPlayers.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
     $('sel-p1').innerHTML = '<option value="">Seleziona P1</option>' + opts;
     $('sel-p2').innerHTML = '<option value="">Seleziona P2</option>' + opts;
+    
+    // AGGIUNTO TASTO MATITA PER MODIFICA
     $('players-list-tiny').innerHTML = allPlayers.map(p => `
         <div class="flex justify-between border-b border-gray-800 pb-1 items-center">
             <span class="font-bold text-gray-300">${p.name}</span> 
-            <span onclick="app.deleteItem('players','${p.id}')" class="cursor-pointer text-red-500 text-[10px] uppercase hover:bg-red-900/50 px-1 rounded">elimina</span>
+            <div class="flex gap-2">
+                <button onclick="app.loadPlayerForEdit('${p.id}')" class="text-xs text-blue-400 hover:text-white">✏️</button>
+                <span onclick="app.deleteItem('players','${p.id}')" class="cursor-pointer text-red-500 text-[10px] uppercase hover:bg-red-900/50 px-1 rounded">x</span>
+            </div>
         </div>`).join('');
 }
 
@@ -539,8 +643,17 @@ function getTeamName(id) { return teams.find(t => t.id === id)?.name || '...'; }
 function calculateStatsData() {
     const scores = {};
     matches.forEach(m => { processHits(m.hitsA, m.teamA, scores); processHits(m.hitsB, m.teamB, scores); });
-    return Object.entries(scores).sort((a,b) => b[1] - a[1]).map(entry => ({ name: entry[0], score: entry[1] }));
+    
+    return Object.entries(scores)
+        .sort((a, b) => {
+            // 1. Punteggio decrescente
+            if (b[1] !== a[1]) return b[1] - a[1];
+            // 2. Alfabetico crescente (Stabilità)
+            return a[0].localeCompare(b[0]);
+        })
+        .map(entry => ({ name: entry[0], score: entry[1] }));
 }
+
 function processHits(map, tId, scores) {
     if(!map) return;
     const t = teams.find(x => x.id === tId);
