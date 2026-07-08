@@ -1,5 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query, where, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
 // CONFIGURAZIONE
 /* VECCHIE CHIAVI
@@ -26,6 +27,7 @@ const firebaseConfig = {
 
 const appInstance = initializeApp(firebaseConfig);
 const db = getFirestore(appInstance);
+const storage = getStorage(appInstance);
 const ADMIN_PASS = "leopleop";
 
 // STATO
@@ -74,56 +76,70 @@ window.app = {
         const name = $('player-name').value.trim();
         const fileInput = $('player-photo');
         const file = fileInput.files[0];
+        const videoInput = $('player-video');
+        const videoFile = videoInput ? videoInput.files[0] : null;
 
         if(!name) return alert("Inserisci nome");
-        
+
+        if (videoFile && videoFile.size > 50 * 1024 * 1024) {
+            return alert("Video troppo grande (>50MB) anche per la compressione. Registra una clip più corta.");
+        }
+
         const btn = $('btn-save-player');
         btn.disabled = true;
         btn.innerText = "Elaborazione...";
-        
+
         try {
-            // Stats comuni
             const stats = {
                 hand: $('player-hand').value,
                 style: $('player-style').value,
-                nickname: $('player-nick').value.trim(), 
-                description: $('player-desc').value.trim(), 
+                nickname: $('player-nick').value.trim(),
+                description: $('player-desc').value.trim(),
                 prec: $('stat-prec').value,
                 pow: $('stat-pow').value,
                 tol: $('stat-tol').value
             };
 
-            // Gestione FOTO
             let photoUrl = "";
-            
-            // Caso 1: Stiamo MODIFICANDO
+
             if (editingPlayerId) {
                 const existingPlayer = allPlayers.find(p => p.id === editingPlayerId);
-                // Se l'utente ha caricato una nuova foto, la processiamo.
-                // Altrimenti teniamo quella vecchia.
                 if (file) {
                     photoUrl = await compressImage(file);
                 } else {
                     photoUrl = existingPlayer.photoUrl || "";
                 }
 
-                await updateDoc(doc(db, "players", editingPlayerId), { 
-                    name, photoUrl, ...stats 
+                let celebrationVideoUrl = existingPlayer.celebrationVideoUrl || "";
+                if (videoFile) {
+                    btn.innerText = "Comprimendo video...";
+                    celebrationVideoUrl = await uploadCelebrationVideo(videoFile, editingPlayerId);
+                }
+
+                await updateDoc(doc(db, "players", editingPlayerId), {
+                    name, photoUrl, celebrationVideoUrl, ...stats
                 });
                 alert("Giocatore Aggiornato!");
-                app.cancelEdit(); // Esci dalla modalità edit
+                app.cancelEdit();
 
             } else {
-                // Caso 2: Stiamo CREANDO
                 if (file) photoUrl = await compressImage(file);
-                await addDoc(collection(db, "players"), { name, photoUrl, ...stats, createdAt: new Date() });
+
+                const newDocRef = await addDoc(collection(db, "players"), { name, photoUrl, ...stats, createdAt: new Date() });
+
+                if (videoFile) {
+                    btn.innerText = "Comprimendo video...";
+                    const celebrationVideoUrl = await uploadCelebrationVideo(videoFile, newDocRef.id);
+                    await updateDoc(newDocRef, { celebrationVideoUrl });
+                }
+
                 alert("Giocatore Creato!");
-                
-                // Reset form solo se creazione
+
                 $('player-name').value = '';
                 $('player-nick').value = '';
                 $('player-desc').value = '';
-                fileInput.value = ''; 
+                fileInput.value = '';
+                if (videoInput) videoInput.value = '';
             }
 
         } catch (e) {
@@ -131,7 +147,6 @@ window.app = {
             alert("Errore: " + e.message);
         } finally {
             btn.disabled = false;
-            // Ripristina testo corretto in base allo stato
             btn.innerText = editingPlayerId ? "Aggiorna Giocatore" : "Salva e Carica";
         }
     },
@@ -174,6 +189,7 @@ window.app = {
         $('player-nick').value = '';
         $('player-desc').value = '';
         $('player-photo').value = '';
+        if ($('player-video')) $('player-video').value = '';
         $('stat-prec').value = 70;
         $('stat-pow').value = 70;
         $('stat-tol').value = 70;
@@ -341,6 +357,57 @@ window.app = {
     }
 };
 
+// --- HELPER COMPRESSIONE VIDEO ---
+const compressVideo = (file) => {
+    return new Promise((resolve, reject) => {
+        const video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.src = URL.createObjectURL(file);
+
+        video.onloadedmetadata = () => {
+            const MAX_WIDTH = 480;
+            const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+            const w = Math.round(video.videoWidth * scale);
+            const h = Math.round(video.videoHeight * scale);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+
+            const stream = canvas.captureStream(30);
+            const recorder = new MediaRecorder(stream, {
+                mimeType: 'video/webm;codecs=vp8',
+                videoBitsPerSecond: 800000 // ~800kbps, sufficiente per clip brevi
+            });
+
+            const chunks = [];
+            recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+            recorder.onstop = () => {
+                URL.revokeObjectURL(video.src);
+                resolve(new Blob(chunks, { type: 'video/webm' }));
+            };
+            recorder.onerror = (e) => reject(e.error || e);
+
+            let drawing = true;
+            const drawFrame = () => {
+                if (!drawing) return;
+                ctx.drawImage(video, 0, 0, w, h);
+                requestAnimationFrame(drawFrame);
+            };
+
+            video.onplay = () => { drawing = true; drawFrame(); };
+            video.onended = () => { drawing = false; recorder.stop(); };
+
+            recorder.start();
+            video.play().catch(reject);
+        };
+
+        video.onerror = (e) => reject(e);
+    });
+};
+
 // --- HELPER COMPRESSIONE ---
 const compressImage = (file) => {
     return new Promise((resolve, reject) => {
@@ -363,6 +430,14 @@ const compressImage = (file) => {
         }
         reader.onerror = (err) => reject(err);
     });
+};
+
+// --- HELPER UPLOAD VIDEO ---
+const uploadCelebrationVideo = async (file, playerId) => {
+    const compressed = await compressVideo(file);
+    const fileRef = ref(storage, `celebrations/${playerId}_${Date.now()}.webm`);
+    await uploadBytes(fileRef, compressed);
+    return await getDownloadURL(fileRef);
 };
 
 // --- FETCHING ---
@@ -458,16 +533,34 @@ function checkGoal(newHits, oldHits, teamId) {
 function triggerGoalAnimation(playerId, teamId) {
     const player = allPlayers.find(p => p.id === playerId);
     const team = teams.find(t => t.id === teamId);
-    
+
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#ff6b00', '#ffffff'] });
 
     const overlay = $('overlay-goal');
-    $('overlay-goal-img').style.backgroundImage = `url('${player?.photoUrl || ''}')`;
+    const imgEl = $('overlay-goal-img');
+    const videoEl = $('overlay-goal-video');
     $('overlay-goal-name').innerText = player?.name || 'GOL!';
     $('overlay-goal-team').innerText = team?.name || '';
-    
+
+    if (player?.celebrationVideoUrl) {
+        imgEl.classList.add('hide');
+        videoEl.classList.remove('hide');
+        videoEl.src = player.celebrationVideoUrl;
+        videoEl.currentTime = 0;
+        videoEl.muted = true;
+        videoEl.play().catch(() => {});
+    } else {
+        videoEl.classList.add('hide');
+        videoEl.pause();
+        imgEl.classList.remove('hide');
+        imgEl.style.backgroundImage = `url('${player?.photoUrl || ''}')`;
+    }
+
     overlay.classList.remove('hide');
-    setTimeout(() => { overlay.classList.add('hide'); }, 4000);
+    setTimeout(() => {
+        overlay.classList.add('hide');
+        videoEl.pause();
+    }, 4000);
 }
 
 function triggerEndMatch(match) {
