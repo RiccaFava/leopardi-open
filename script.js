@@ -2,6 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebas
 import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query, where, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 // CONFIGURAZIONE
+/* VECCHIE CHIAVI
 const firebaseConfig = {
     apiKey: "AIzaSyDk5lVeA3mwUzPVa3pY6LBAsjRoYIdshvA",
     authDomain: "leopardi-open.firebaseapp.com",
@@ -10,6 +11,18 @@ const firebaseConfig = {
     messagingSenderId: "303228111366",
     appId: "1:303228111366:web:be79db0b49a837e3c99187"
 };
+*/
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC-DVzvJlHO81N8TihmT7siFvprQ1fGCxE",
+  authDomain: "leopardi-open-7242c.firebaseapp.com",
+  projectId: "leopardi-open-7242c",
+  storageBucket: "leopardi-open-7242c.firebasestorage.app",
+  messagingSenderId: "767838807994",
+  appId: "1:767838807994:web:51490d8124b417a4269f83"
+};
+
+
 
 const appInstance = initializeApp(firebaseConfig);
 const db = getFirestore(appInstance);
