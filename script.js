@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query, where, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query, where, orderBy, getDocs, runTransaction } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
 // CONFIGURAZIONE
@@ -40,6 +40,11 @@ let pendingCupAction = null;
 let previousMatchesState = {}; 
 let unsubMatches = null;
 let unsubTeams = null;
+let unsubMatches = null;
+let unsubTeams = null;
+let unsubGlobalPlayers = null;
+let unsubEditionsAdmin = null;
+let unsubArchive = null;
 
 // STATO MODIFICA GIOCATORE
 let editingPlayerId = null;
@@ -59,7 +64,6 @@ window.app = {
             if (localStorage.getItem('bp_auth')) { 
                 $('view-dashboard').classList.remove('hide'); 
                 loadEditionsForAdmin(); 
-                subscribeToGlobalPlayers(); 
             }
             else $('view-login').classList.remove('hide');
         }
@@ -291,12 +295,24 @@ window.app = {
     // --- GAMEPLAY ---
     undoHit: async (matchId, teamField, cupNum) => {
         if(!confirm(`Annullare punto?`)) return;
-        const match = matches.find(m => m.id === matchId);
-        const currentHits = { ...match[teamField] };
-        delete currentHits[cupNum];
-        const updates = { [teamField]: currentHits };
-        if(match.status === 'finished') { updates.status = 'live'; updates.winner = null; }
-        await updateDoc(doc(db, "matches", matchId), updates);
+        try {
+            await runTransaction(db, async (transaction) => {
+                const matchRef = doc(db, "matches", matchId);
+                const matchSnap = await transaction.get(matchRef);
+                if (!matchSnap.exists()) return;
+
+                const match = matchSnap.data();
+                const currentHits = { ...match[teamField] };
+                delete currentHits[cupNum];
+                const updates = { [teamField]: currentHits };
+                if (match.status === 'finished') { updates.status = 'live'; updates.winner = null; }
+
+                transaction.update(matchRef, updates);
+            });
+        } catch (e) {
+            console.error("Errore annullamento:", e);
+            alert("Errore di connessione. Riprova.");
+        }
     },
     
     handleCupClick: (matchId, teamField, cupNum, teamId) => {
@@ -324,37 +340,41 @@ window.app = {
     },
 
     confirmHit: async (playerId) => {
-        // Disabilita UI per evitare doppi click accidentali
-        const btnId = `btn-scorer-${pendingCupAction.teamField === 'hitsA' ? 'p1' : 'p2'}`; // Logica approssimativa, meglio bloccare tutto il modale
         $('scorer-modal').classList.add('hide');
 
         const { matchId, teamField, cupNum } = pendingCupAction;
-        
-        // CORREZIONE CRITICA:
-        // Recupera sempre la versione più recente del match dall'array globale sincronizzato
-        // Invece di usare l'oggetto 'match' stantio salvato in pendingCupAction
-        const currentMatch = matches.find(m => m.id === matchId);
-        
-        if (!currentMatch) {
-            alert("Errore: Partita non trovata o conclusa.");
-            return;
-        }
 
-        const newHits = { ...currentMatch[teamField], [cupNum]: playerId };
-        const updates = { [teamField]: newHits };
-        
-        if (Object.keys(newHits).length >= 6) {
-            updates.status = 'finished';
-            updates.winner = teamField === 'hitsA' ? currentMatch.teamA : currentMatch.teamB;
-        }
-        
         try {
-            await updateDoc(doc(db, "matches", matchId), updates);
+            await runTransaction(db, async (transaction) => {
+                const matchRef = doc(db, "matches", matchId);
+                const matchSnap = await transaction.get(matchRef);
+
+                if (!matchSnap.exists()) {
+                    throw new Error("Partita non trovata o conclusa.");
+                }
+
+                const currentMatch = matchSnap.data();
+
+                // Se qualcun altro ha già segnato in questo bicchiere nel frattempo, blocca
+                if (currentMatch[teamField] && currentMatch[teamField][cupNum]) {
+                    throw new Error("Punto già assegnato da un altro dispositivo.");
+                }
+
+                const newHits = { ...currentMatch[teamField], [cupNum]: playerId };
+                const updates = { [teamField]: newHits };
+
+                if (Object.keys(newHits).length >= 6) {
+                    updates.status = 'finished';
+                    updates.winner = teamField === 'hitsA' ? currentMatch.teamA : currentMatch.teamB;
+                }
+
+                transaction.update(matchRef, updates);
+            });
         } catch (e) {
             console.error("Errore salvataggio punto:", e);
-            alert("Errore di connessione. Riprova.");
+            alert(e.message.includes("già assegnato") ? e.message : "Errore di connessione. Riprova.");
         }
-    }
+    },
 };
 
 // --- HELPER COMPRESSIONE VIDEO ---
@@ -443,14 +463,16 @@ const uploadCelebrationVideo = async (file, playerId) => {
 // --- FETCHING ---
 subscribeToGlobalPlayers(); 
 function subscribeToGlobalPlayers() {
-    onSnapshot(query(collection(db, "players"), orderBy("name")), sn => {
+    if (unsubGlobalPlayers) unsubGlobalPlayers();
+    unsubGlobalPlayers = onSnapshot(query(collection(db, "players"), orderBy("name")), sn => {
         allPlayers = sn.docs.map(d => ({id: d.id, ...d.data()}));
         renderPlayerSelects();
         if(!$('view-players').classList.contains('hide')) renderPlayersPage();
     });
 }
 function loadEditionsForAdmin() {
-    onSnapshot(query(collection(db, "editions"), orderBy("createdAt", "desc")), (snap) => {
+    if (unsubEditionsAdmin) unsubEditionsAdmin();
+    unsubEditionsAdmin = onSnapshot(query(collection(db, "editions"), orderBy("createdAt", "desc")), (snap) => {
         const list = snap.docs.map(d => ({id: d.id, ...d.data()}));
         $('admin-edition-select').innerHTML = '<option value="">-- Seleziona --</option>' + list.map(e => `<option value="${e.id}">${e.name} ${e.status==='closed'?'(Chiusa)':''}</option>`).join('');
         if(currentEditionId) $('admin-edition-select').value = currentEditionId;
@@ -800,7 +822,8 @@ function renderStats() {
 }
 
 function renderArchiveList() {
-    onSnapshot(query(collection(db, "editions"), orderBy("createdAt", "desc")), (snap) => {
+    if (unsubArchive) unsubArchive();
+    unsubArchive = onSnapshot(query(collection(db, "editions"), orderBy("createdAt", "desc")), (snap) => {
         const list = snap.docs.map(d => ({id: d.id, ...d.data()}));
         const el = $('archive-list');
         if(!list.length) { el.innerHTML = "Nessun evento passato."; return; }
