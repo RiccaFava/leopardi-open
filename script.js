@@ -80,11 +80,16 @@ window.app = {
         const file = fileInput.files[0];
         const videoInput = $('player-video');
         const videoFile = videoInput ? videoInput.files[0] : null;
+        const audioInput = $('player-audio');
+        const audioFile = audioInput ? audioInput.files[0] : null;
 
         if(!name) return alert("Inserisci nome");
 
         if (videoFile && videoFile.size > 50 * 1024 * 1024) {
             return alert("Video troppo grande (>50MB) anche per la compressione. Registra una clip più corta.");
+        }
+        if (audioFile && audioFile.size > 5 * 1024 * 1024) {
+            return alert("Audio troppo grande (>5MB). Usa una clip più corta.");
         }
 
         const btn = $('btn-save-player');
@@ -118,9 +123,16 @@ window.app = {
                     celebrationVideoUrl = await uploadCelebrationVideo(videoFile, editingPlayerId);
                 }
 
-                await updateDoc(doc(db, "players", editingPlayerId), {
-                    name, photoUrl, celebrationVideoUrl, ...stats
+                let celebrationAudioUrl = existingPlayer.celebrationAudioUrl || "";
+                if (audioFile) {
+                    btn.innerText = "Caricamento audio...";
+                    celebrationAudioUrl = await uploadCelebrationAudio(audioFile, editingPlayerId);
+                }
+
+                await updateDoc(doc(db, "players", editingPlayerId), { 
+                    name, photoUrl, celebrationVideoUrl, celebrationAudioUrl, ...stats 
                 });
+
                 alert("Giocatore Aggiornato!");
                 app.cancelEdit();
 
@@ -135,13 +147,20 @@ window.app = {
                     await updateDoc(newDocRef, { celebrationVideoUrl });
                 }
 
+                if (audioFile) {
+                    btn.innerText = "Caricamento audio...";
+                    const celebrationAudioUrl = await uploadCelebrationAudio(audioFile, newDocRef.id);
+                    await updateDoc(newDocRef, { celebrationAudioUrl });
+                }
+
                 alert("Giocatore Creato!");
 
                 $('player-name').value = '';
                 $('player-nick').value = '';
                 $('player-desc').value = '';
-                fileInput.value = '';
+                fileInput.value = ''; 
                 if (videoInput) videoInput.value = '';
+                if (audioInput) audioInput.value = '';
             }
 
         } catch (e) {
@@ -170,6 +189,17 @@ window.app = {
         $('stat-pow').value = p.pow || 50;
         $('stat-tol').value = p.tol || 50;
 
+        // Mostra stato file già caricati
+        $('photo-hint').innerText = p.photoUrl 
+            ? "✅ Foto già caricata — seleziona un file per sostituirla" 
+            : "Nessuna foto caricata";
+        $('video-hint').innerText = p.celebrationVideoUrl 
+            ? "✅ Video già caricato — seleziona un file per sostituirlo" 
+            : "Nessun video caricato";
+        $('audio-hint').innerText = p.celebrationAudioUrl 
+            ? "✅ Audio già caricato — seleziona un file per sostituirlo" 
+            : "Nessun audio caricato";
+
         // UI Changes
         $('form-title').innerText = "✏️ Modifica: " + p.name;
         $('btn-save-player').innerText = "Aggiorna Giocatore";
@@ -192,6 +222,10 @@ window.app = {
         $('player-desc').value = '';
         $('player-photo').value = '';
         if ($('player-video')) $('player-video').value = '';
+        if ($('player-audio')) $('player-audio').value = '';
+        $('photo-hint').innerText = "Carica foto per sostituire l'attuale";
+        $('video-hint').innerText = "Clip breve (3-5s). Verrà compressa automaticamente.";
+        $('audio-hint').innerText = "Frase o urlo breve (2-3s), max 5MB.";
         $('stat-prec').value = 70;
         $('stat-pow').value = 70;
         $('stat-tol').value = 70;
@@ -250,13 +284,80 @@ window.app = {
         if(!currentEditionId) return;
         if(!confirm("Chiudere l'evento?")) return;
         const finalStats = calculateStatsData(); 
+        const finalAvgStats = calculateAvgStatsData();
         await updateDoc(doc(db, "editions", currentEditionId), { 
             status: 'closed', 
             podium: { first: $('rank-1').value, second: $('rank-2').value, third: $('rank-3').value },
-            topScorers: finalStats.slice(0, 3)
+            topScorers: finalStats,
+            topAvgScorers: finalAvgStats
         });
         alert("Archiviato!");
         app.router('archive');
+    },
+
+    recalculateTopScorers: async (editionId) => {
+        if (!confirm("Ricalcolare la classifica marcatori completa per questa edizione?")) return;
+        try {
+            const matchesSnap = await getDocs(query(collection(db, "matches"), where("editionId", "==", editionId)));
+            const teamsSnap = await getDocs(query(collection(db, "teams"), where("editionId", "==", editionId)));
+            const editionMatches = matchesSnap.docs.map(d => d.data());
+            const editionTeams = teamsSnap.docs.map(d => d.data());
+
+            const scores = {};
+            const processHitsLocal = (map, tId) => {
+                if(!map) return;
+                const t = editionTeams.find(x => x.id === tId) || editionTeams.find((_,i) => teamsSnap.docs[i].id === tId);
+                // fallback: cerchiamo il team tramite l'id documento
+            };
+            
+            // Ricostruiamo una mappa id->team usando gli id dei documenti
+            const teamsById = {};
+            teamsSnap.docs.forEach(d => teamsById[d.id] = d.data());
+
+            editionMatches.forEach(m => {
+                const addHits = (hits, teamId) => {
+                    if (!hits) return;
+                    const team = teamsById[teamId];
+                    if (!team) return;
+                    Object.values(hits).forEach(playerId => {
+                        const player = allPlayers.find(p => p.id === playerId);
+                        if (player) scores[player.name] = (scores[player.name] || 0) + 1;
+                    });
+                };
+                addHits(m.hitsA, m.teamA);
+                addHits(m.hitsB, m.teamB);
+            });
+
+            const finalStats = Object.entries(scores)
+                .sort((a, b) => b[1] !== a[1] ? b[1] - a[1] : a[0].localeCompare(b[0]))
+                .map(entry => ({ name: entry[0], score: entry[1] }));
+
+            const played = {};
+            editionMatches.forEach(m => {
+                const teamA = teamsById[m.teamA];
+                const teamB = teamsById[m.teamB];
+                [teamA, teamB].forEach(t => {
+                    if (!t) return;
+                    [t.p1Name, t.p2Name].forEach(name => {
+                        if (!name) return;
+                        played[name] = (played[name] || 0) + 1;
+                    });
+                });
+            });
+            const finalAvgStats = Object.keys(played)
+                .map(name => {
+                    const g = scores[name] || 0;
+                    const p = played[name];
+                    return { name, goals: g, matches: p, avg: p ? g / p : 0 };
+                })
+                .sort((a, b) => b.avg !== a.avg ? b.avg - a.avg : a.name.localeCompare(b.name));
+
+            await updateDoc(doc(db, "editions", editionId), { topScorers: finalStats, topAvgScorers: finalAvgStats });
+            alert("Classifiche aggiornate!");
+        } catch (e) {
+            console.error(e);
+            alert("Errore: " + e.message);
+        }
     },
 
     // --- ADMIN: TEAM & MATCH ---
@@ -458,6 +559,12 @@ const uploadCelebrationVideo = async (file, playerId) => {
     return await getDownloadURL(fileRef);
 };
 
+const uploadCelebrationAudio = async (file, playerId) => {
+    const fileRef = ref(storage, `audio/${playerId}_${Date.now()}_${file.name}`);
+    await uploadBytes(fileRef, file);
+    return await getDownloadURL(fileRef);
+};
+
 // --- FETCHING ---
 subscribeToGlobalPlayers(); 
 function subscribeToGlobalPlayers() {
@@ -576,10 +683,20 @@ function triggerGoalAnimation(playerId, teamId) {
         imgEl.style.backgroundImage = `url('${player?.photoUrl || ''}')`;
     }
 
+    const audioEl = $('overlay-goal-audio');
+    if (player?.celebrationAudioUrl) {
+        audioEl.src = player.celebrationAudioUrl;
+        audioEl.currentTime = 0;
+        audioEl.play().catch(() => {}); // ignora blocco autoplay su dispositivi passivi
+    } else {
+        audioEl.pause();
+    }
+
     overlay.classList.remove('hide');
     setTimeout(() => {
         overlay.classList.add('hide');
         videoEl.pause();
+        audioEl.pause();
     }, 4000);
 }
 
@@ -780,6 +897,45 @@ function calculateStatsData() {
         .map(entry => ({ name: entry[0], score: entry[1] }));
 }
 
+function calculateAvgStatsData() {
+    const goals = {};
+    const played = {};
+
+    matches.forEach(m => {
+        const teamA = teams.find(t => t.id === m.teamA);
+        const teamB = teams.find(t => t.id === m.teamB);
+
+        [teamA, teamB].forEach(t => {
+            if (!t) return;
+            [t.p1Name, t.p2Name].forEach(name => {
+                if (!name) return;
+                played[name] = (played[name] || 0) + 1;
+            });
+        });
+
+        processHits(m.hitsA, m.teamA, goals);
+        processHits(m.hitsB, m.teamB, goals);
+    });
+
+    return Object.keys(played)
+        .map(name => {
+            const g = goals[name] || 0;
+            const p = played[name];
+            return { name, goals: g, matches: p, avg: p ? g / p : 0 };
+        })
+        .sort((a, b) => {
+            if (b.avg !== a.avg) return b.avg - a.avg;
+            return a.name.localeCompare(b.name);
+        });
+}
+
+function getTopScorers(fullList, limit = 5) {
+    if (fullList.length <= limit) return fullList;
+    const cutoffScore = fullList[limit - 1].score;
+    // Include tutti quelli con punteggio pari o superiore al 5° in classifica
+    return fullList.filter(s => s.score >= cutoffScore);
+}
+
 function processHits(map, tId, scores) {
     if(!map) return;
     const t = teams.find(x => x.id === tId);
@@ -791,17 +947,25 @@ function processHits(map, tId, scores) {
 }
 
 function renderStats() {
-    const stats = calculateStatsData();
+    const fullStats = calculateStatsData();
+    const stats = getTopScorers(fullStats, 5);
+
+    const fullAvgStats = calculateAvgStatsData();
+    const avgStats = getTopScorers(
+        fullAvgStats.map(s => ({ name: s.name, score: s.avg, matches: s.matches, goals: s.goals })),
+        5
+    );
+
     const tickerContainer = $('live-ticker-content');
-    
-    if(!tickerContainer) return;
+    if (!tickerContainer) return;
 
     if (stats.length === 0) {
         tickerContainer.innerHTML = '<span class="ticker-item">Nessun punto segnato...</span>';
+        tickerContainer.style.animationDuration = '20s';
         return;
     }
 
-    const htmlContent = stats.map((s, i) => `
+    const goalsHtml = stats.map((s, i) => `
         <span class="ticker-item">
             <span class="rank">#${i+1}</span>
             ${s.name}
@@ -810,13 +974,37 @@ function renderStats() {
         <span class="text-gray-700 mx-2">•</span>
     `).join('');
 
+    const avgHtml = avgStats.map((s, i) => `
+        <span class="ticker-item">
+            <span class="rank">#${i+1}</span>
+            ${s.name}
+            <span class="score">(${s.score.toFixed(2)}/partita)</span>
+        </span>
+        <span class="text-gray-700 mx-2">•</span>
+    `).join('');
+
+    const labelGoals = `
+        <span class="ticker-item" style="color: #ff6b00; font-weight: 900; margin: 0 30px; font-style: italic; letter-spacing: 1px;">
+            ★ TOP MARCATORI ★
+        </span>
+    `;
+    const labelAvg = `
+        <span class="ticker-item" style="color: #ff6b00; font-weight: 900; margin: 0 30px; font-style: italic; letter-spacing: 1px;">
+            ★ MEDIA GOL/PARTITA ★
+        </span>
+    `;
     const separator = `
         <span class="ticker-item" style="color: #ff6b00; font-weight: 900; margin: 0 50px; font-style: italic; letter-spacing: 2px;">
             ★ LEOPARDI OPEN ★
         </span>
     `;
 
-    tickerContainer.innerHTML = htmlContent + separator + htmlContent + separator + htmlContent;
+    const block = labelGoals + goalsHtml + labelAvg + avgHtml;
+    tickerContainer.innerHTML = block + separator + block + separator + block;
+
+    const totalItems = stats.length + avgStats.length;
+    const duration = Math.max(25, totalItems * 6);
+    tickerContainer.style.animationDuration = `${duration}s`;
 }
 
 function renderArchiveList() {
@@ -829,11 +1017,18 @@ function renderArchiveList() {
             if (e.status === 'closed') {
                 const p = e.podium || {};
                 const scorers = e.topScorers || [];
+                const avgScorers = e.topAvgScorers || [];
+
                 const renderScorers = scorers.map((s, i) => `<div class="flex justify-between text-xs border-b border-gray-800 pb-1 mb-1"><span class="text-gray-300">#${i+1} ${s.name}</span><span class="font-bold text-bp">${s.score}</span></div>`).join('');
+                const renderAvgScorers = avgScorers.map((s, i) => `<div class="flex justify-between text-xs border-b border-gray-800 pb-1 mb-1"><span class="text-gray-300">#${i+1} ${s.name}</span><span class="font-bold text-bp">${s.avg.toFixed(2)}</span></div>`).join('');
+
                 return `
                 <div class="card p-6 border-l-4 border-l-yellow-600 bg-gradient-to-br from-darksec to-black">
-                    <h3 class="text-2xl font-black italic mb-4 text-white">${e.name}</h3>
-                    <div class="grid grid-cols-2 gap-4 text-sm">
+                    <div class="flex justify-between items-start mb-4">
+                        <h3 class="text-2xl font-black italic text-white">${e.name}</h3>
+                        ${localStorage.getItem('bp_auth') ? `<button onclick="app.recalculateTopScorers('${e.id}')" class="text-[10px] text-gray-500 hover:text-bp underline whitespace-nowrap ml-2">🔄 Ricalcola</button>` : ''}
+                    </div>
+                    <div class="grid grid-cols-3 gap-4 text-sm">
                         <div class="space-y-2">
                             <div class="text-[10px] uppercase text-gray-500 font-bold mb-1">Podio Team</div>
                             <div class="text-yellow-500 font-bold text-lg">🥇 ${p.first || 'N/A'}</div>
@@ -841,8 +1036,16 @@ function renderArchiveList() {
                             <div class="text-orange-700">🥉 ${p.third || '-'}</div>
                         </div>
                         <div class="border-l border-gray-700 pl-4 flex flex-col">
-                            <div class="text-[10px] uppercase text-gray-500 font-bold mb-2">Top Marcatori</div>
-                            ${renderScorers || '<span class="text-gray-500 italic">Dati non disponibili</span>'}
+                            <div class="text-[10px] uppercase text-gray-500 font-bold mb-2">Marcatori</div>
+                            <div class="max-h-32 overflow-y-auto pr-1">
+                                ${renderScorers || '<span class="text-gray-500 italic">Dati non disponibili</span>'}
+                            </div>
+                        </div>
+                        <div class="border-l border-gray-700 pl-4 flex flex-col">
+                            <div class="text-[10px] uppercase text-gray-500 font-bold mb-2">Media Gol/Partita</div>
+                            <div class="max-h-32 overflow-y-auto pr-1">
+                                ${renderAvgScorers || '<span class="text-gray-500 italic">Dati non disponibili</span>'}
+                            </div>
                         </div>
                     </div>
                 </div>`;

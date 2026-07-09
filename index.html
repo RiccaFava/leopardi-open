@@ -131,7 +131,12 @@
                     <div class="mb-4 text-center border-t border-gray-700 pt-4">
                         <label class="block text-xs text-gray-400 mb-2 uppercase font-bold">🎥 Video Esultanza (opzionale)</label>
                         <input type="file" id="player-video" accept="video/*" class="text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-orange-600 file:text-white hover:file:bg-orange-500 mb-2 w-full">
-                        <p class="text-[10px] text-gray-500 italic">Clip breve (3-5s). Verrà compressa automaticamente.</p>
+                        <p class="text-[10px] text-gray-500 italic" id="video-hint">Clip breve (3-5s). Verrà compressa automaticamente.</p>
+                    </div>
+                    <div class="mb-4 text-center border-t border-gray-700 pt-4">
+                        <label class="block text-xs text-gray-400 mb-2 uppercase font-bold">🔊 Motto Audio (opzionale)</label>
+                        <input type="file" id="player-audio" accept="audio/*" class="text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-600 file:text-white hover:file:bg-purple-500 mb-2 w-full">
+                        <p class="text-[10px] text-gray-500 italic" id="audio-hint">Frase o urlo breve (2-3s), max 5MB.</p>
                     </div>
                     <div class="space-y-2 mb-4">
                         <input type="text" id="player-name" class="input font-bold mb-0" placeholder="Nome Atleta">
@@ -229,6 +234,7 @@
         <h1 class="text-8xl font-black text-transparent bg-clip-text bg-gradient-to-b from-yellow-400 to-orange-600 mb-8 italic drop-shadow-[0_0_15px_rgba(255,165,0,0.8)] animate__animated animate__pulse animate__infinite">GOAL!</h1>
         <div class="w-64 h-64 rounded-full border-8 border-white shadow-[0_0_50px_rgba(255,255,255,0.5)] bg-cover bg-center mb-6" id="overlay-goal-img"></div>
         <video id="overlay-goal-video" class="hide w-64 h-64 md:w-80 md:h-80 rounded-2xl border-8 border-white shadow-[0_0_50px_rgba(255,255,255,0.5)] object-cover mb-6" playsinline muted loop></video>
+        <audio id="overlay-goal-audio"></audio>
         <h2 id="overlay-goal-name" class="text-4xl font-black uppercase text-white tracking-widest drop-shadow-lg">NOME GIOCATORE</h2>
         <div class="text-xl text-yellow-400 font-serif italic mt-2" id="overlay-goal-team">Team Name</div>
     </div>
